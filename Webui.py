@@ -4,7 +4,7 @@ import whisper
 import gradio as gr
 
 # -----------------------------------------------------------------------------
-# Default settings
+# Defaults & Utilities
 # -----------------------------------------------------------------------------
 DEFAULT_WHISPER_MODEL = "medium"
 DEFAULT_OLLAMA_MODEL  = "llama3.2:latest"
@@ -13,8 +13,29 @@ Sempre responda de forma clara, concisa e forneça exemplos de código quando fi
 DEFAULT_TTS_VOICE     = "Luciana"
 DEFAULT_TTS_RATE      = 180  # words per minute
 
+def get_ollama_models() -> list[str]:
+    """
+    Calls `ollama list` on your machine and returns a list of model names.
+    Falls back to [DEFAULT_OLLAMA_MODEL] if it fails.
+    """
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True, text=True, check=True
+        ).stdout
+        lines = [l for l in result.splitlines() if l.strip()]
+        # each line: "<model_name>  <other columns…>"
+        models = [line.split()[0] for line in lines]
+        return models or [DEFAULT_OLLAMA_MODEL]
+    except Exception as e:
+        print("Could not list Ollama models:", e)
+        return [DEFAULT_OLLAMA_MODEL]
+
+# Pre‐seed the dropdown
+OLLAMA_MODELS = get_ollama_models()
+
 # -----------------------------------------------------------------------------
-# Core pipeline
+# Core pipeline functions
 # -----------------------------------------------------------------------------
 def transcribe_audio(audio_path: str, model_name: str) -> str:
     model = whisper.load_model(model_name)
@@ -33,18 +54,22 @@ def generate_llm_response(user_text: str, llm_model: str, system_prompt: str) ->
     except Exception as e:
         return f"❌ Erro ao conectar ao Ollama: {e}"
 
-def synthesize_speech(text: str, voice: str, rate: int,
-                      aiff_path="response.aiff", wav_path="response.wav") -> str:
+def synthesize_speech(
+    text: str,
+    voice: str,
+    rate: int,
+    aiff_path="response.aiff",
+    wav_path="response.wav"
+) -> str:
     try:
-        # macOS say → AIFF
         subprocess.run(
             ["say", "-v", voice, "-r", str(rate), "-o", aiff_path, text],
             check=True
         )
-        # ffmpeg AIFF → WAV
         subprocess.run(
             ["ffmpeg", "-y", "-i", aiff_path, wav_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=True
         )
         return wav_path
     except subprocess.CalledProcessError as e:
@@ -59,113 +84,126 @@ def process_audio(
     tts_voice: str,
     tts_rate: int
 ):
-    """
-    Full pipeline: STT → LLM → TTS, using the *saved* settings.
-    """
     if not audio_path:
         return "❌ Nenhum áudio enviado.", "", None
 
-    # 1) Transcribe
     transcript = transcribe_audio(audio_path, whisper_model)
-
-    # 2) LLM response
-    response = generate_llm_response(transcript, ollama_model, system_prompt)
-
-    # 3) TTS
-    out_audio = synthesize_speech(response, tts_voice, tts_rate)
-    return transcript, response, out_audio
+    response   = generate_llm_response(transcript, ollama_model, system_prompt)
+    audio_out  = synthesize_speech(response, tts_voice, tts_rate)
+    return transcript, response, audio_out
 
 # -----------------------------------------------------------------------------
-# Settings "apply" callback
+# Callback to “Save Settings” into hidden States
 # -----------------------------------------------------------------------------
 def save_settings(
-    w_model, o_model, sys_prompt, tts_voice, tts_rate
+    whisper_model, ollama_model, system_prompt, tts_voice, tts_rate
 ):
-    """
-    Store the selected settings into hidden states.
-    """
-    return w_model, o_model, sys_prompt, tts_voice, tts_rate
+    return whisper_model, ollama_model, system_prompt, tts_voice, tts_rate
 
 # -----------------------------------------------------------------------------
-# Build Gradio UI
+# Helper to refresh the Ollama‐models dropdown
 # -----------------------------------------------------------------------------
-with gr.Blocks(title="🗣️ STT + LLM + TTS (with Save Settings)") as demo:
-    gr.Markdown("# 🗣️ STT + LLM + TTS\nConfigure, save, then chime in!")
+def refresh_ollama_models():
+    models = get_ollama_models()
+    # Return an “update” to the Dropdown:
+    return gr.Dropdown.update(choices=models, value=models[0])
 
-    # Tab container
+# -----------------------------------------------------------------------------
+# Build the Gradio UI
+# -----------------------------------------------------------------------------
+with gr.Blocks(title="🗣️ STT + LLM + TTS (Refreshable Models)") as demo:
+    gr.Markdown("# 🗣️ STT + LLM + TTS\nChoose your model, save settings, then chat!")
+
     with gr.Tabs():
 
-        # ----- SETTINGS Tab -----
+        # SETTINGS TAB
         with gr.TabItem("⚙️ Settings"):
-            gr.Markdown("### Configure os parâmetros e, em seguida, clique em **Save Settings**")
+            gr.Markdown("### Configure os parâmetros, depois clique em **Save Settings**")
 
             whisper_model_dd = gr.Dropdown(
                 ["tiny","base","small","medium","large"],
-                value=DEFAULT_WHISPER_MODEL,
-                label="🔊 Whisper Model"
+                label="🔊 Whisper Model",
+                value=DEFAULT_WHISPER_MODEL
             )
-            ollama_model_tb = gr.Textbox(
-                value=DEFAULT_OLLAMA_MODEL,
-                label="🤖 Ollama Model (ex: llama3.2:latest)"
+            ollama_model_dd = gr.Dropdown(
+                OLLAMA_MODELS,
+                label="🤖 Ollama Model",
+                value=DEFAULT_OLLAMA_MODEL
             )
+            refresh_btn = gr.Button("🔄 Refresh Models")
             system_prompt_ta = gr.Textbox(
-                value=DEFAULT_SYSTEM_PROMPT,
+                DEFAULT_SYSTEM_PROMPT,
                 label="📜 System Prompt",
                 lines=4
             )
             tts_voice_dd = gr.Dropdown(
                 ["Luciana","Joana","Felipe","Diego","Alex"],
-                value=DEFAULT_TTS_VOICE,
-                label="🎙️ macOS Voice"
+                label="🎙️ macOS Voice",
+                value=DEFAULT_TTS_VOICE
             )
             tts_rate_slider = gr.Slider(
                 100, 300, step=5, value=DEFAULT_TTS_RATE,
                 label="🚀 Speech Rate (wpm)"
             )
 
-            save_btn = gr.Button("💾 Save Settings")
+            save_btn      = gr.Button("💾 Save Settings")
             save_feedback = gr.Textbox(interactive=False, label="Status")
 
-            # Hidden State objects to hold the “active” settings
-            whisper_state       = gr.State(DEFAULT_WHISPER_MODEL)
-            ollama_state        = gr.State(DEFAULT_OLLAMA_MODEL)
-            prompt_state        = gr.State(DEFAULT_SYSTEM_PROMPT)
-            tts_voice_state     = gr.State(DEFAULT_TTS_VOICE)
-            tts_rate_state      = gr.State(DEFAULT_TTS_RATE)
+            # Hidden states for “applied” settings
+            whisper_state   = gr.State(DEFAULT_WHISPER_MODEL)
+            ollama_state    = gr.State(DEFAULT_OLLAMA_MODEL)
+            prompt_state    = gr.State(DEFAULT_SYSTEM_PROMPT)
+            tts_voice_state = gr.State(DEFAULT_TTS_VOICE)
+            tts_rate_state  = gr.State(DEFAULT_TTS_RATE)
 
-            # Hook the Save button to update those states
+            # Refresh the Ollama dropdown when clicked
+            refresh_btn.click(
+                fn=refresh_ollama_models,
+                inputs=[],
+                outputs=ollama_model_dd
+            )
+
+            # Save Settings → update the hidden states
             save_btn.click(
                 fn=save_settings,
-                inputs=[whisper_model_dd, ollama_model_tb,
-                        system_prompt_ta, tts_voice_dd, tts_rate_slider],
-                outputs=[whisper_state, ollama_state,
-                         prompt_state, tts_voice_state, tts_rate_state]
+                inputs=[
+                    whisper_model_dd,
+                    ollama_model_dd,
+                    system_prompt_ta,
+                    tts_voice_dd,
+                    tts_rate_slider
+                ],
+                outputs=[
+                    whisper_state,
+                    ollama_state,
+                    prompt_state,
+                    tts_voice_state,
+                    tts_rate_state
+                ]
             ).then(
-                # notify user
-                lambda: "✅ Settings saved! Switch to Interaction tab.",
+                lambda: "✅ Settings saved! Now go to Interaction.",
                 None, save_feedback
             )
 
-        # ----- INTERACTION Tab -----
+        # INTERACTION TAB
         with gr.TabItem("💬 Interaction"):
-            gr.Markdown("### Grave ou envie áudio e clique em **Send**")
+            gr.Markdown("### Grave ou faça upload de áudio e clique em **Send**")
 
-            audio_input   = gr.Audio(label="🎤 Your Audio", type="filepath")
-            send_btn      = gr.Button("▶️ Send")
+            audio_input    = gr.Audio(label="🎤 Your Audio", type="filepath")
+            send_btn       = gr.Button("▶️ Send")
             transcript_out = gr.Textbox(label="📝 Transcript", interactive=False)
             response_out   = gr.Textbox(label="💡 Assistant Response", interactive=False)
             audio_output   = gr.Audio(label="🔊 Assistant Speech", interactive=False)
 
-            # process_audio uses *saved* state values, not the raw widgets
             send_btn.click(
                 fn=process_audio,
                 inputs=[
                     audio_input,
-                    whisper_state,    # ← takes the saved Whisper model
-                    ollama_state,     # ← saved Ollama model
-                    prompt_state,     # ← saved system prompt
-                    tts_voice_state,  # ← saved TTS voice
-                    tts_rate_state    # ← saved TTS rate
+                    whisper_state,
+                    ollama_state,
+                    prompt_state,
+                    tts_voice_state,
+                    tts_rate_state
                 ],
                 outputs=[transcript_out, response_out, audio_output]
             )
