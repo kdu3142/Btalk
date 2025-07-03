@@ -106,7 +106,7 @@ def save_settings(
 def refresh_ollama_models():
     models = get_ollama_models()
     # Return an “update” to the Dropdown:
-    return gr.Dropdown.update(choices=models, value=models[0])
+    return gr.update(choices=models, value=models[0])
 
 # -----------------------------------------------------------------------------
 # Build the Gradio UI
