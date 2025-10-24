@@ -45,7 +45,7 @@ def generate_llm_response(user_text: str, llm_model: str, system_prompt: str) ->
     prompt = f"{system_prompt}\n\nUsuário: {user_text}\nAssistente:"
     try:
         r = requests.post(
-            "http://localhost:11434/api/generate",
+            "http://ollama:11434/api/generate",
             json={"model": llm_model, "prompt": prompt, "stream": False},
             timeout=10
         )
@@ -91,6 +91,19 @@ def process_audio(
     response   = generate_llm_response(transcript, ollama_model, system_prompt)
     audio_out  = synthesize_speech(response, tts_voice, tts_rate)
     return transcript, response, audio_out
+
+def generate_response_and_audio(
+    transcript: str,
+    ollama_model: str,
+    system_prompt: str,
+    tts_voice: str,
+    tts_rate: int
+):
+    if not transcript:
+        return "(sem transcrição)", None
+    response = generate_llm_response(transcript, ollama_model, system_prompt)
+    audio_out = synthesize_speech(response, tts_voice, tts_rate)
+    return response, audio_out
 
 # -----------------------------------------------------------------------------
 # Callback to “Save Settings” into hidden States
@@ -196,16 +209,19 @@ with gr.Blocks(title="🗣️ STT + LLM + TTS (Refreshable Models)") as demo:
             audio_output   = gr.Audio(label="🔊 Assistant Speech", interactive=False)
 
             send_btn.click(
-                fn=process_audio,
+                fn=transcribe_audio,
+                inputs=[audio_input, whisper_state],
+                outputs=[transcript_out]
+            ).then(
+                fn=generate_response_and_audio,
                 inputs=[
-                    audio_input,
-                    whisper_state,
+                    transcript_out,
                     ollama_state,
                     prompt_state,
                     tts_voice_state,
                     tts_rate_state
                 ],
-                outputs=[transcript_out, response_out, audio_output]
+                outputs=[response_out, audio_output]
             )
 
     demo.launch(
